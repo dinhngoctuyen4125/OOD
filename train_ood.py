@@ -220,7 +220,7 @@ def main():
     args.device = device
     set_seed(args)
 
-    tokenizer = RobertaTokenizer.from_pretrained(args.model_name_or_path)
+    tokenizer = RobertaTokenizer.   from_pretrained(args.model_name_or_path)
     model = RobertaForSelector(args.model_name_or_path, projection_dim=100)
     model.to(args.device)
     datasets = [args.unlearn_dataset, args.ood_dataset]

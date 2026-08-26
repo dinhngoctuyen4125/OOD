@@ -13,3 +13,9 @@ pip install -r requirements.txt
 ```bash
 sudo nohup bash train_ood.sh > logs/train_ood.log 2>&1 &
 ```
+
+## Evaluate OOD Detector
+
+```bash
+sudo nohup bash eval_ood.sh > logs/eval_ood.log 2>&1 &
+```
