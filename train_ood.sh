@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=ood
+#SBATCH --job-name=train_ood
 #SBATCH --output=logs/output_%j.log
 #SBATCH --error=logs/error_%j.log
 #SBATCH --partition=defq
