@@ -19,6 +19,6 @@ do
         --ood_base_model "microsoft/codebert-base" \
         --ood_setting_name "codellama" \
         --ood_type "_all" \
-        --batch_size 32 \
+        --batch_size 128 \
         --seed ${SEED}
 done
