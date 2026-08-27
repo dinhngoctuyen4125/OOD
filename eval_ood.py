@@ -20,6 +20,7 @@ from src.ood_model_selector import RobertaForSelector_inference
 
 # ---- GMM weighting functions ----
 
+# Tính Pt_mix(x) = CDF của GMM tại điểm x
 def gmm_cdf(x, gmm):
     weights = gmm.weights_
     means = gmm.means_.flatten()
@@ -27,22 +28,27 @@ def gmm_cdf(x, gmm):
     return np.sum([w * norm.cdf(x, m, s) for w, m, s in zip(weights, means, stds)])
 
 
+# Tính trọng số w(x)^t từ OCSVM score qua GMM
 def obtain_weights(input_x, gmm, x0):
-    cp_x = gmm_cdf(input_x, gmm)
-    cp_sym = gmm_cdf(2 * x0 - input_x, gmm)
+    # Symmetric cumulative probability
+    cp_x = gmm_cdf(input_x, gmm)              # Pt_mix(d_H(x))
+    cp_sym = gmm_cdf(2 * x0 - input_x, gmm)   # Pt_mix(đối xứng qua d0_H)
 
+    # Cumulative probability kết hợp
     cp_sum = 1 - max(cp_x, cp_sym) + min(cp_x, cp_sym)
-    cp_sum *= 10  # scaling_factor
+    cp_sum *= 10  # scaling factor
     range_th = 2
 
+    # Sigmoid → trọng số (0, 1)
     w = math.exp(cp_sum - range_th) / (1 + math.exp(cp_sum - range_th))
 
+    # Discretize thành 3 mức
     if w > 0.9:
-        w = 1.2
+        w = 1.2           # LoRA FULL
     elif 0.3 < w <= 0.4:
-        w = w
+        w = w             # Partial
     else:
-        w = 0
+        w = 0             # LoRA OFF
 
     return w
 
@@ -150,16 +156,17 @@ def main():
             max_length=args.max_seq_length, return_tensors="pt"
         )
 
-        # Compute Mahalanobis scores
+        # === SOFT-WEIGHTED INFERENCE ===
+        # 1. Tính score vector s(x) qua 13 layers (bỏ layer 0 → 12 chiều)
         with torch.no_grad():
             mah_scores = ood_model.get_unsup_Mah_score_s(
                 ood_input, mean_list, precision_list, fea_list
             )[:, 1:]
 
-        # OCSVM scoring
+        # 2. Tính d_H(x) = khoảng cách tới siêu phẳng OCSVM
         ocsvm_scores = ocsvm.score_samples(mah_scores)
 
-        # Compute weights
+        # 3. Tính trọng số w(x) qua GMM (Pt_mix)
         for score in ocsvm_scores:
             w = obtain_weights(score, gmm_w, x0)
             all_weights.append(w)

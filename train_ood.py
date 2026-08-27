@@ -49,10 +49,13 @@ def train(args, model, train_dataset, test_dataset, benchmarks, save_name):
 
     def detect_ood(acc_global, seed):
         seed = str(seed)
+
+        # Bước 1: Trích mean, precision, features từ train data qua 13 layers
         mean_list, precision_list, fea_list = model.sample_X_estimator(train_dataloader)
 
         test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
+        # Bước 2: Tính score vector s(x) = Mahalanobis + Cosine (bỏ layer 0)
         test_mah_vanlia = model.get_unsup_Mah_score(test_dataloader, mean_list, precision_list, fea_list)[:, 1:]
         train_mah_vanlia = model.get_unsup_Mah_score(train_dataloader, mean_list, precision_list, fea_list)[:, 1:]
 
@@ -60,6 +63,7 @@ def train(args, model, train_dataset, test_dataset, benchmarks, save_name):
             ood_dataloader = DataLoader(ood_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
             ood_mah_vanlia = model.get_unsup_Mah_score(ood_dataloader, mean_list, precision_list, fea_list)[:, 1:]
 
+            # Labels: OOD (D_rest) = 1, ID (D_forget test split) = 0
             ood_labels = np.ones(shape=(ood_mah_vanlia.shape[0],))
             test_labels = np.zeros(shape=(test_mah_vanlia.shape[0],))
 
@@ -71,6 +75,7 @@ def train(args, model, train_dataset, test_dataset, benchmarks, save_name):
             np.random.shuffle(ood_mah_scores)
 
             if args.ood == 'ocsvm':
+                # Bước 3: Fit OCSVM → tính khoảng cách d_H(x) tới siêu phẳng
                 c_lr = svm.OneClassSVM(nu=0.1, kernel='linear', degree=2)
                 c_lr.fit(train_mah_scores)
 
@@ -79,11 +84,11 @@ def train(args, model, train_dataset, test_dataset, benchmarks, save_name):
                 train_scores = c_lr.score_samples(train_mah_scores)
                 Y_test = np.concatenate((ood_labels, test_labels))
 
-
-
+                # Bước 4: Xây GMM (Pt_mix), tìm d0_H (x0)
                 gmm_w, x0 = weighting_func_gmm(train_scores, test_scores)
 
-                threshold = np.max(train_scores)  # 99% of the training set as the threshold
+                # Bước 5: Đánh giá accuracy
+                threshold = np.max(train_scores)
 
                 test_labels_prediction = (test_scores <= threshold).astype(int)
                 ood_labels_prediction = (ood_scores <= threshold).astype(int)
@@ -91,24 +96,30 @@ def train(args, model, train_dataset, test_dataset, benchmarks, save_name):
                 acc = (Y_predict == Y_test).mean()
                 print('Test set accuracy: {:.3f}'.format(acc))
 
+                # Bước 6: Lưu checkpoint nếu accuracy cải thiện
                 if acc > acc_global:
                     ood_path = f"./ood_checkpoints_{save_name}_{seed}"
 
                     if not os.path.exists(ood_path):
                         os.mkdir(ood_path)
 
+
                     torch.save(mean_list, f"{ood_path}/{args.unlearn_dataset}_{args.ood_dataset}_mean_list_ocsvm.pt")
                     torch.save(precision_list, f"{ood_path}/{args.unlearn_dataset}_{args.ood_dataset}_precision_list_ocsvm.pt")
                     torch.save(fea_list, f"{ood_path}/{args.unlearn_dataset}_{args.ood_dataset}_fea_list_ocsvm.pt")
 
+
                     with open(f"{ood_path}/{args.unlearn_dataset}_{args.ood_dataset}_gmm_w_ocsvm.pkl", "wb") as output_file:
                         pickle.dump(gmm_w, output_file)
+
                     with open(f"{ood_path}/{args.unlearn_dataset}_{args.ood_dataset}_ocsvm.pkl", "wb") as output_file:
                         pickle.dump(c_lr, output_file)
+
                     with open(f"{ood_path}/{args.unlearn_dataset}_{args.ood_dataset}_threshold_ocsvm.json", 'w') as f:
                         json.dump([x0, threshold, acc], f)
                     print("SAVE", "CURRENT BEST ACC: ", acc)
                     acc_global = acc
+
                     model.roberta.save_pretrained(f"{ood_path}/{args.unlearn_dataset}_{args.ood_dataset}_roberta_ocsvm")
 
                 return acc_global
@@ -136,18 +147,21 @@ def train(args, model, train_dataset, test_dataset, benchmarks, save_name):
         print("Epoch Accuracy: ", acc_g)
 
 
+# Xây Pt_mix (GMM 2 components) từ OCSVM scores của D_forget
 def weighting_func_gmm(train_in_score, test_in_score):
-    # 1. fit two gaussians
-    mean1, std1 = norm.fit(train_in_score)
-    mean2, std2 = norm.fit(test_in_score)
+    # 1. Fit 2 Gaussians riêng biệt trên OCSVM scores
+    mean1, std1 = norm.fit(train_in_score)   # Gaussian cho train split
+    mean2, std2 = norm.fit(test_in_score)    # Gaussian cho test split
 
-    # 2. build the gaussian mixture model
+    # 2. Xây GMM thủ công (không dùng EM) → Pt_mix
     gmm = GMM(n_components=2)
     gmm.means_ = np.array([[mean1], [mean2]])
-    gmm.covariances_ = np.array([[[std2 ** 2]], [[std2 ** 2]]])
-    gmm.weights_ = np.array([0.5, 0.5])
+    gmm.covariances_ = np.array([[[std2 ** 2]], [[std2 ** 2]]])  # Cả 2 dùng std2
+    gmm.weights_ = np.array([0.5, 0.5])                         # Trọng số bằng nhau
     gmm.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(gmm.covariances_))
 
+    # 3. Tìm d0_H: điểm mà Pt_mix(d0_H) ≈ 0.5 (decision boundary)
+    # Với 2 Gaussians cùng weight 0.5 và cùng variance → midpoint = 0.5
     x0 = (mean1 + mean2) / 2
 
     return gmm, x0
