@@ -9,11 +9,15 @@ from tqdm import tqdm
 from peft import PeftModel
 from peft import LoraConfig, get_peft_model
 
-
+# LOSS
+# TÍNH ENTROPY (tương ứng phần -Σ_{j=1}^{N^B} Δ(i,l,j) * log(Δ(i,l,j)) trong công thức)
 def entropy(input_):
+    # input_ truyền vào là s_dist (tức ma trận Δ)
+    # Tính: -Δ * log(Δ) (cộng thêm 1e-5 để tránh lỗi log(0) - thủ thuật numerical stability)
     entropy = -input_ * torch.log(input_ + 1e-5)
+    # Tính: Tổng theo j (dim=1 là chiều của j)
     entropy = torch.sum(entropy, dim=1)
-    return entropy
+    return entropy # Trả về vector độ lớn N^B chứa entropy của từng mẫu i
 
 
 
@@ -55,11 +59,21 @@ class RobertaForSelector(nn.Module):
                 attention_mask=batch["attention_mask"],
             )
 
+        # Tương đương tổng Σ_{l=1}^{L=13} (tổng qua các layers)
         for i in range(13):
+            # z_1: f_ω(x_i) - features từ nhánh LoRA (đang train)
             z_1 = torch.mean(outputs.hidden_states[i], dim=1, keepdim=False)
+            # z_2: f_ω_key(x_j) - features từ nhánh gốc (bị đóng băng - frozen)
             z_2 = torch.mean(outputs_k.hidden_states[i], dim=1, keepdim=False)
+            
+            # Tính dot product giữa tất cả các cặp trong batch (tử số)
             sim_mat = torch.einsum('nc,ck->nk', [z_1, z_2.T.detach()])
+            
+            # Tính Softmax (chính là toàn bộ cục phân thức Delta): s_dist là ma trận Δ(i,l,j)
             s_dist = F.softmax(sim_mat, dim=1)
+            
+            # Tương đương tổng Σ_{i=1}^{N^B}, NHƯNG code dùng mean thay vì sum
+            # entropy(s_dist) tính -Σ_{j=1}^{N^B} Δ * log(Δ) cho mỗi mẫu i
             info_loss += torch.mean(entropy(s_dist))
 
         return torch.tensor(0.0, device=batch_mlm["input_ids"].device), info_loss
