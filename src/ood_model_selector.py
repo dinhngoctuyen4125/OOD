@@ -1,4 +1,4 @@
-import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,39 +16,10 @@ def entropy(input_):
     return entropy
 
 
-class InfoNCELoss(nn.Module):
-    def __init__(self, temperature=0.07):
-        super(InfoNCELoss, self).__init__()
-        self.temperature = temperature
-
-    def forward(self, z1, z2):
-        # Normalize the embeddings to simplify cosine similarity calculation
-        z1 = nn.functional.normalize(z1, p=2, dim=1)
-        z2 = nn.functional.normalize(z2, p=2, dim=1)
-
-        # Concatenate all positive pairs
-        n_samples = z1.shape[0]  # Batch size
-        z = torch.cat([z1, z2], dim=0)
-
-        # Cosine similarity between all pairs
-        sim_matrix = torch.matmul(z, z.T) / self.temperature
-
-        # Extract logits: positive and negatives
-        sim_pos = torch.exp(sim_matrix[:n_samples, n_samples:])
-        sim_negs = torch.exp(
-            torch.cat([sim_matrix[:n_samples, :n_samples], sim_matrix[:n_samples, n_samples + 1:]], dim=1))
-
-        # Calculate InfoNCE loss
-        sum_negs = sim_negs.sum(dim=1)
-        loss = -torch.log(sim_pos.diag() / sum_negs)
-        return loss.mean()
-
 
 class RobertaForSelector(nn.Module):
     def __init__(self, model_name, projection_dim):
         super().__init__()
-        self.m = 0.999
-        self.layer_num = 13
         peft_config = LoraConfig(task_type="FEATURE_EXTRACTION",
                                  r=8,  # Rank Number
                                  lora_alpha=32,  # Alpha (Scaling Factor)
@@ -67,16 +38,6 @@ class RobertaForSelector(nn.Module):
 
         for param_k in self.roberta_k.parameters():
             param_k.requires_grad = False
-
-
-
-    @torch.no_grad()
-    def _momentum_update_key_encoder(self):
-        """
-        Momentum update of the key encoder
-        """
-        for param_q, param_k in zip(self.roberta.parameters(), self.roberta_k.parameters()):
-            param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
 
 
     def forward(self, batch_mlm=None, batch=None, steps=0, dataloader=None):
@@ -101,8 +62,7 @@ class RobertaForSelector(nn.Module):
             s_dist = F.softmax(sim_mat, dim=1)
             info_loss += torch.mean(entropy(s_dist))
 
-        mlm_loss = torch.tensor(0.0, device=batch_mlm["input_ids"].device)
-        return mlm_loss, info_loss
+        return torch.tensor(0.0, device=batch_mlm["input_ids"].device), info_loss
 
     def sample_X_estimator(self, dataloader):
         group_lasso = sklearn.covariance.EmpiricalCovariance(assume_centered=False)
@@ -144,11 +104,10 @@ class RobertaForSelector(nn.Module):
         return mean_list, precision_list, fea_list
 
     def get_unsup_Mah_score(self, dataloader, sample_mean, precision, fea_list):
-        total_mah_scores, total_cs_scores = [], []
+        total_mah_scores = []
         num_layers = 13
         for i in range(num_layers):
             total_mah_scores.append([])
-            total_cs_scores.append([])
 
         # for batch in dataloader:
         for step, batch in enumerate(tqdm(dataloader)):
@@ -185,14 +144,6 @@ class RobertaForSelector(nn.Module):
 class RobertaForSelector_inference(nn.Module):
     def __init__(self, model_name, lora_path, projection_dim):
         super().__init__()
-        self.layer_num = 13
-        peft_config = LoraConfig(task_type="FEATURE_EXTRACTION",
-                                 r=8,  # Rank Number
-                                 lora_alpha=32,  # Alpha (Scaling Factor)
-                                 lora_dropout=0.1,  # Dropout Prob for Lora
-                                 target_modules=["query", "key", "value"],
-                                 # Which layer to apply LoRA, usually only apply on MultiHead Attention Layer
-                                 bias='none', )
 
         roberta = RobertaModel.from_pretrained(model_name, output_hidden_states=True)
         peft_model = PeftModel.from_pretrained(
@@ -241,11 +192,10 @@ class RobertaForSelector_inference(nn.Module):
         return mean_list, precision_list, fea_list
 
     def get_unsup_Mah_score_s(self, ood_input, sample_mean, precision, fea_list):
-        total_mah_scores, total_cs_scores = [], []
+        total_mah_scores = []
         num_layers = 13
         for i in range(num_layers):
             total_mah_scores.append([])
-            total_cs_scores.append([])
 
 
         batch_all_features = []

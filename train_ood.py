@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from transformers import RobertaTokenizer
 from torch.optim import AdamW
 from transformers.optimization import get_linear_schedule_with_warmup
-from src.ood_utils import set_seed, collate_fn, detection_performance
+from src.ood_utils import set_seed, collate_fn
 
 from sklearn import svm
 from sklearn.mixture import GaussianMixture as GMM
@@ -18,7 +18,7 @@ import json
 import warnings
 from src.ood_data import load
 import pickle
-import math
+
 
 from scipy.stats import norm
 
@@ -79,22 +79,9 @@ def train(args, model, train_dataset, test_dataset, benchmarks, save_name):
                 train_scores = c_lr.score_samples(train_mah_scores)
                 Y_test = np.concatenate((ood_labels, test_labels))
 
-                scores = np.concatenate((ood_scores, test_scores))
-                results = detection_performance(scores, Y_test, 'mah_logs', tag='TMP')
-                neg_resuls = detection_performance(-scores, Y_test, 'feats_logs', tag='TMP')
 
-                if sum(results["TMP"].values()) < sum(neg_resuls["TMP"].values()):
-                    results = neg_resuls
-                auroc = results['TMP']['AUROC']
-                print(args.ood + ' current auroc: {:.3f}'.format(auroc))
 
-                ## test the new weighting function
                 gmm_w, x0 = weighting_func_gmm(train_scores, test_scores)
-                w_res_in_train = [obtain_weights(x, gmm_w, x0) for x in train_scores]
-                w_res_in_test = [obtain_weights(x, gmm_w, x0) for x in test_scores]
-                w_res_ood = [obtain_weights(x, gmm_w, x0) for x in ood_scores]
-
-                print(np.mean(np.array(w_res_in_train)), np.mean(np.array(w_res_in_test)), np.mean(np.array(w_res_ood)))
 
                 threshold = np.max(train_scores)  # 99% of the training set as the threshold
 
@@ -165,35 +152,7 @@ def weighting_func_gmm(train_in_score, test_in_score):
 
     return gmm, x0
 
-# cumulative prob func
-def gmm_cdf(x, gmm):
-    weights = gmm.weights_
-    means = gmm.means_.flatten()
-    stds = np.sqrt(gmm.covariances_.flatten())
-    cdf_vals = [w * norm.cdf(x, mean, std) for w, mean, std in zip(weights, means, stds)]
-    return np.sum(cdf_vals)
 
-# the cumulative prob for a point
-def cumulative_probability(x, gmm):
-    return gmm_cdf(x, gmm)
-
-# 6. the cumulative prob for the symmtric point
-def symmetric_cumulative_probability(x, x0, gmm):
-    symmetric_x = 2 * x0 - x
-    return gmm_cdf(symmetric_x, gmm)
-
-def obtain_weights(input_x, gmm, x0):
-    cp_x = cumulative_probability(input_x, gmm)
-    cp_symmetric_x = symmetric_cumulative_probability(input_x, x0, gmm)
-
-    cp_sum = 1 - max(cp_x, cp_symmetric_x) + min(cp_x, cp_symmetric_x)
-    scaling_factor = 10
-    cp_sum *= scaling_factor
-    range_th = 2 # 0.5
-
-    w_res = math.exp(cp_sum - range_th) / (1 + math.exp(cp_sum - range_th))
-
-    return w_res
 
 def main():
     parser = argparse.ArgumentParser()
